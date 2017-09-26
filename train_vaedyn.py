@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import numpy as np
 import tensorflow as tf
 
@@ -62,8 +63,10 @@ def train(args, model, ds=None):
     ckpt = tf.train.get_checkpoint_state(dirname)
 
     with tf.Session() as sess:
-        summary_writer = tf.train.SummaryWriter('logs/' + datetime.now().isoformat().replace(':', '-'), sess.graph)
-        check = tf.add_check_numerics_ops()
+        summary_writer = tf.summary.FileWriter('logs/' + datetime.now().isoformat().replace(':', '-'), sess.graph)
+
+        # <hyin/Sep-22nd-2017> do not use add_check_numerics_ops in while_loop: see tensorflow issue 2211
+        # check = tf.add_check_numerics_ops()
         # merged = tf.merge_all_summaries()
         tf.global_variables_initializer().run()
         saver = tf.train.Saver(tf.global_variables())
@@ -110,8 +113,8 @@ def train(args, model, ds=None):
                     y = seq_samples
 
                 feed = {model.input_data: x, model.target_data: y}
-                train_loss, _, cr, summary, mu, input, target= sess.run(
-                        [model.cost, model.train_op, check, model.merged_summary, model.mu, model.flat_input, model.target],
+                train_loss, _, summary= sess.run(
+                        [model.cost, model.train_op, model.merged_summary],
                                                              feed)
 
                 end = time.time()
@@ -121,7 +124,7 @@ def train(args, model, ds=None):
                             e+1, train_loss, end - start)
                 start = time.time()
 
-            summary_writer.add_summary(summary, e)
+            # summary_writer.add_summary(summary, e)
             if (e + 1) % args.save_every == 0 and ((e + 1) > 0):
                 checkpoint_path = os.path.join(dirname, 'model.ckpt')
                 saver.save(sess, checkpoint_path, global_step=e * total_batch + b + 1)
@@ -130,7 +133,7 @@ def train(args, model, ds=None):
             #
             # train_loss, cr, summary, sigma, mu = model.train(sess, args, input_data=x,
             #         sequence_length=np.array([args.seq_length for i in range(args.batch_size)]), output_data=y, check=check, merged=merged)
-            # summary_writer.add_summary(summary, e)
+            summary_writer.add_summary(summary, e)
             # if (e + 1) % args.save_every == 0 and ((e) > 0):
             #     checkpoint_path = os.path.join(dirname, 'model.ckpt')
             #     saver.save(sess, checkpoint_path, global_step=e + b + 1)
@@ -175,6 +178,7 @@ if __name__ == '__main__':
     #prepare dataset
     print 'Constructing dataset...'
     image_seq_data = utils.extract_image_sequences(fname='bin/extracted_data_image_seq.pkl', only_digits=False)
+    # image_seq_data = np.array(utils.load_zipped_pickle('bin/rolling_dyn.zip'))
     print image_seq_data.shape
     image_seq_dataset = dataset.construct_datasets(image_seq_data)
 

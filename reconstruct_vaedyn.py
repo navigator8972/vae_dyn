@@ -19,7 +19,7 @@ with open(os.path.join('save-vaedyn', 'config.pkl')) as f:
 
 model = VAEDYN(saved_args, sample_mode)
 sess = tf.InteractiveSession()
-saver = tf.train.Saver(tf.all_variables())
+saver = tf.train.Saver(tf.global_variables())
 
 ckpt = tf.train.get_checkpoint_state('save-vaedyn')
 print "loading model: ",ckpt.model_checkpoint_path
@@ -32,7 +32,6 @@ image_seq_data = utils.extract_image_sequences(fname='bin/extracted_data_image_s
 print image_seq_data.shape
 image_seq_dataset = dataset.construct_datasets(image_seq_data)
 
-print 'eps:', model.cell.eps.eval()
 seq_samples = image_seq_dataset.train.next_batch(saved_args.batch_size)[0]
 
 print seq_samples.shape

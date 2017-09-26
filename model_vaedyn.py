@@ -4,16 +4,30 @@ import numpy as np
 def linear(input_, output_size, scope=None, stddev=0.02, bias_start=0.0, with_w=False):
     shape = input_.get_shape().as_list()
 
-    with tf.variable_scope(scope or "Linear"):
+    sequential_mode = len(shape) > 2    #need to deal with sequential case that input_ is batch x seq_len x dim
+                                        #tensorflow seems not supporting tensor product right now, use reshape
+    if sequential_mode:
+        reshaped_input = tf.reshape(input_, (-1, shape[-1]))
+    else:
+        reshaped_input = input_
 
-        matrix = tf.get_variable("Matrix", [shape[1], output_size], tf.float32, tf.random_uniform_initializer(-stddev, stddev))
+    with tf.variable_scope(scope or "linear"):
+        matrix = tf.get_variable("matrix", [shape[-1], output_size], tf.float32, tf.random_uniform_initializer(-stddev, stddev))
 
         bias = tf.get_variable("bias", [output_size],
             initializer=tf.constant_initializer(bias_start))
-        if with_w:
-            return tf.matmul(input_, matrix) + bias, matrix, bias
+        
+        ret = tf.matmul(reshaped_input, matrix) + bias
+
+        if sequential_mode:
+            reshaped_ret = tf.reshape(ret, (shape[0], shape[1], -1))
         else:
-            return tf.matmul(input_, matrix) + bias
+            reshaped_ret = ret
+
+        if with_w:
+            return reshaped_ret, matrix, bias
+        else:
+            return reshaped_ret + bias
 
 def nonlinear(input_, n_units=10, n_layers=1, nonlinearity_type='relu', scope=None, stddev=0.02, bias_start=0.0):
     """
@@ -26,11 +40,18 @@ def nonlinear(input_, n_units=10, n_layers=1, nonlinearity_type='relu', scope=No
         n_layers = len(n_units)
 
     shape = input_.get_shape().as_list()
-    with tf.variable_scope(scope or 'Nonlinear'):
-        last_output_dim = shape[1]
-        last_output = input_
+    sequential_mode = len(shape) > 2    #need to deal with sequential case that input_ is batch x seq_len x dim
+                                        #tensorflow seems not supporting tensor product right now, use reshape
+    if sequential_mode:
+        reshaped_input = tf.reshape(input_, (-1, shape[-1]))
+    else:
+        reshaped_input = input_    
+
+    with tf.variable_scope(scope or 'nonlinear'):
+        last_output_dim = shape[-1]
+        last_output = reshaped_input
         for i in range(n_layers):
-            matrix = tf.get_variable('Matrix_{0}'.format(i), [last_output_dim, n_latent_units[i]], tf.float32,
+            matrix = tf.get_variable('matrix_{0}'.format(i), [last_output_dim, n_latent_units[i]], tf.float32,
                                     tf.random_uniform_initializer(-stddev, stddev))
             bias = tf.get_variable("bias_{0}".format(i), [n_latent_units[i]], initializer=tf.constant_initializer(bias_start))
             last_output = tf.matmul(last_output, matrix) + bias
@@ -40,7 +61,11 @@ def nonlinear(input_, n_units=10, n_layers=1, nonlinearity_type='relu', scope=No
 
             last_output_dim = n_latent_units[i]
 
-    return last_output
+        if sequential_mode:
+            reshaped_last_output = tf.reshape(last_output, (shape[0], shape[1], -1))
+        else:
+            reshaped_last_output = last_output
+    return reshaped_last_output
 
 class VartiationalRNNCell(tf.contrib.rnn.RNNCell):
     """Variational RNN cell."""
@@ -59,13 +84,18 @@ class VartiationalRNNCell(tf.contrib.rnn.RNNCell):
         self.renc = renc
         self.rdec = rdec
 
+        
+
     @property
     def state_size(self):
         return (self.n_h, self.n_h)
 
     @property
     def output_size(self):
-        return (self.n_z, self.n_z, self.n_x, self.n_x, self.n_x, self.n_z, self.n_z)
+        return (self.n_z, self.n_z, self.n_z, self.n_z, self.n_x, self.n_z, self.n_z)
+
+    def zero_state(self, batch_size, dtype):
+        return self.lstm.zero_state(batch_size, dtype)
 
     def __call__(self, x, state, scope=None):
         with tf.variable_scope(scope or type(self).__name__):
@@ -76,7 +106,7 @@ class VartiationalRNNCell(tf.contrib.rnn.RNNCell):
                 h = state.h
             else:
                 c, h = state
-
+            
             with tf.variable_scope("Prior"):
                 with tf.variable_scope("hidden"):
                     #<hyin/Apr-07-2017> note that h depends on the last z
@@ -107,23 +137,6 @@ class VartiationalRNNCell(tf.contrib.rnn.RNNCell):
             self.enc_mu_post = enc_mu
             self.enc_sigma_post = enc_sigma
 
-            #<hyin/Dec-14th-2016> another way to get the latent encoding, posterior estimation from prior and observation
-            #but the recurrent cell seems to be critical for the decoder, why? Havent we passed the message about h here?
-            # enc_mu_post = 1./(1. + tf.div(enc_sigma, tf.maximum(1e-5,prior_sigma))) * prior_mu + 1./(1. + tf.div(prior_sigma, tf.maximum(1e-5,enc_sigma))) * enc_mu
-            # enc_sigma_post = 1./(1./ tf.maximum(1e-5,enc_sigma) + 1./ tf.maximum(1e-5,prior_sigma))
-
-            #<hyin/Jun-2nd-2017> try another way of mixturing the distributions
-            # dist_idx = np.random.binomial(1, self.prior_prod)
-            #<hyin/Jun-26th-2017> unify the dist_idx for the entire sequence?
-            # dist_idx = self.prior_prod
-            # enc_mu_post = (1-dist_idx) * enc_mu + dist_idx * prior_mu
-            # enc_sigma_post = (1-dist_idx) * enc_sigma + dist_idx * prior_sigma
-
-            #<hyin/Jun-21st-2017> another way, mean of prior and posterior
-            # enc_mu_post = (1-self.prior_prod)*enc_mu + self.prior_prod*prior_mu
-            # enc_sigma_post = (1-self.prior_prod)*enc_sigma+self.prior_prod*prior_sigma
-
-
             self.z = tf.add(enc_mu_post, tf.multiply(enc_sigma_post, self.eps))
 
             self.enc_mu_post = enc_mu_post
@@ -141,14 +154,76 @@ class VartiationalRNNCell(tf.contrib.rnn.RNNCell):
                 with tf.variable_scope("mu"):
                     dec_mu = tf.nn.sigmoid(linear(dec_hidden, self.n_x))
 
-            output, state2 = self.lstm(z_1, state, scope="LSTMCell")
+            output, new_state = self.lstm(z_1, state, scope="LSTMCell")
 
-            # original vrnn, almost no randomness...
-            # however, including x can yield lower training errors
-            # output, state2 = self.lstm(tf.concat((x_1, z_1), 1), state, scope="LSTMCell")
+        return (enc_mu, enc_sigma, enc_mu_post, enc_sigma_post, dec_mu, prior_mu, prior_sigma), new_state
+
+class VartiationalRNNEncoder(tf.contrib.rnn.RNNCell):
+    """Variational RNN encoder."""
+
+    def __init__(self, x_dim, h_dim, z_dim = 100, renc=True, rdec=True):
+        self.n_h = h_dim
+        self.n_x = x_dim
+        self.n_z = z_dim
+        self.n_x_1 = x_dim
+        self.n_z_1 = z_dim
+        self.n_enc_hidden = z_dim
+        self.n_dec_hidden = z_dim
+        self.n_prior_hidden = z_dim
+        self.lstm = tf.contrib.rnn.LSTMCell(self.n_h, state_is_tuple=True, initializer=tf.orthogonal_initializer(gain=1.0))
+        self.prior_prod = 0.0
+        self.renc = renc
+
+    @property
+    def state_size(self):
+        return (self.n_h, self.n_h)
+
+    @property
+    def output_size(self):
+        return (self.n_z, self.n_z, self.n_z, self.n_z, self.n_z, self.n_z)
+
+    def zero_state(self, batch_size, dtype):
+        return self.lstm.zero_state(batch_size, dtype)
+
+    def __call__(self, x, state, scope=None):
+        if isinstance(state, tf.nn.rnn_cell.LSTMStateTuple):
+            c = state.c
+            h = state.h
+        else:
+            c, h = state
+
+        with tf.variable_scope("phi_x"):
+            x_1 = nonlinear(x, n_units=[400, 400, 200], n_layers=3)
+
+        with tf.variable_scope("Encoder"):
+            with tf.variable_scope("hidden"):
+                if self.renc:
+                    enc_hidden = nonlinear(tf.concat((x_1, h), 1), n_units=200, n_layers=1)
+                else:
+                    enc_hidden = nonlinear(x_1, n_units=200, n_layers=1)
+            with tf.variable_scope("mu"):
+                enc_mu    = linear(enc_hidden, self.n_z)
+            with tf.variable_scope("sigma"):
+                enc_sigma = tf.exp(linear(enc_hidden, self.n_z, bias_start=0.0))
+
+        self.eps = tf.random_normal((x.get_shape().as_list()[0], self.n_z), 0.0, 1.0, dtype=tf.float32)
+
+        self.enc_mu = enc_mu
+        self.enc_sigma = enc_sigma
+        self.enc_mu_post = enc_mu
+        self.enc_sigma_post = enc_sigma
+        
+        with tf.variable_scope("z"):
+            self.z = tf.add(self.enc_mu_post, tf.multiply(self.enc_sigma_post, self.eps))
+
+        with tf.variable_scope("phi_z"):
+            z_1 = nonlinear(self.z, self.n_z_1, n_layers=1)
+
+        output, new_state = self.lstm(z_1, state, scope="LSTMCell")
+
+        return (self.enc_mu, self.enc_sigma, self.enc_mu_post, self.enc_sigma_post, self.z, h), new_state
 
 
-        return (enc_mu, enc_sigma, enc_mu_post, enc_sigma_post, dec_mu, prior_mu, prior_sigma), state2
 
 class VAEDYN():
     def __init__(self, args, sample=False):
@@ -228,43 +303,53 @@ class VAEDYN():
 
         self.is_sample = sample
 
-        cell = VartiationalRNNCell(args.dim_size, args.rnn_size, args.latent_size)
-
-        self.cell = cell
 
         self.input_data = tf.placeholder(dtype=tf.float32, shape=[args.batch_size, args.seq_length, args.dim_size], name='input_data')
         self.target_data = tf.placeholder(dtype=tf.float32, shape=[args.batch_size, args.seq_length, args.dim_size],name = 'target_data')
+        
+        # rnn cell for encoder
+        cell = VartiationalRNNEncoder(args.dim_size, args.rnn_size, args.latent_size)
+        self.cell = cell
         #zero state
         self.initial_state_c, self.initial_state_h = cell.zero_state(batch_size=args.batch_size, dtype=tf.float32)
+
         self.initial_lstm_state = tf.nn.rnn_cell.LSTMStateTuple(self.initial_state_c,self.initial_state_h)
+
         self.input_sequence_len = tf.placeholder(dtype=tf.int32, shape=[args.batch_size])
 
-        # input shape: (batch_size, n_steps, n_input)
-        with tf.variable_scope("inputs"):
+        input_seq_len = [args.seq_length] * args.batch_size
+        
+        if self.is_sample:
             inputs = tf.transpose(self.input_data, [1, 0, 2])  # permute n_steps and batch_size
             inputs = tf.reshape(inputs, [-1, args.dim_size])
 
             # Split data because rnn cell needs a list of inputs for the RNN inner loop
             inputs = tf.split(inputs, args.seq_length, 0) # n_steps * (batch_size, n_input)
 
-        flat_target_data = tf.reshape(self.target_data,[-1, args.dim_size])
-
-        self.target = flat_target_data
-        self.flat_input = tf.reshape(tf.transpose(tf.stack(inputs),[1,0,2]),[args.batch_size*args.seq_length, -1])
-        self.input = tf.stack(inputs)
-        # Get cell output
-        outputs, last_state = tf.contrib.rnn.static_rnn(cell, inputs, initial_state=(self.initial_state_c,self.initial_state_h), scope='RNN')
-
-        outputs_reshape = []
-        names = ["enc_mu", "enc_sigma", "enc_mu_post", "enc_sigma_post", "dec_mu", "prior_mu", "prior_sigma"]
-        for n,name in enumerate(names):
-            with tf.variable_scope(name):
+            outputs, last_state = tf.nn.static_rnn( cell=cell,
+                                                    inputs=inputs, 
+                                                    initial_state=self.initial_lstm_state, 
+                                                    dtype=tf.float32,
+                                                    sequence_length=input_seq_len, 
+                                                    scope='encoder')
+            outputs_reshape = []
+            names = ["enc_mu", "enc_sigma", "enc_mu_post", "enc_sigma_post", "z", "hidden_state"]
+            for n,name in enumerate(names):
                 x = tf.stack([o[n] for o in outputs])
                 x = tf.transpose(x,[1,0,2]) #now batch*n_steps*n_input
-                x = tf.reshape(x,[args.batch_size*args.seq_length, -1])
                 outputs_reshape.append(x)
+            
+            enc_mu, enc_sigma, enc_mu_post, enc_sigma_post, z_sample, hidden_state = outputs_reshape
+        else:
+            outputs, last_state = tf.nn.dynamic_rnn(cell=cell, 
+                                                    dtype=tf.float32, 
+                                                    sequence_length=input_seq_len,
+                                                    inputs=self.input_data, 
+                                                    initial_state=self.initial_lstm_state,
+                                                    scope="encoder"
+                                                    )
+            enc_mu, enc_sigma, enc_mu_post, enc_sigma_post, z_sample, hidden_state = outputs
 
-        enc_mu, enc_sigma, enc_mu_post, enc_sigma_post, dec_mu, prior_mu, prior_sigma = outputs_reshape
 
         self.enc_mu = enc_mu
         self.enc_sigma = enc_sigma
@@ -273,19 +358,52 @@ class VAEDYN():
         self.enc_sigma_post = enc_sigma_post
 
         self.final_state_c,self.final_state_h = last_state
-        self.mu = dec_mu
+        
+        #prior from hidden state
+        with tf.variable_scope("prior"):
+            with tf.variable_scope("hidden"):
+                #<hyin/Apr-07-2017> note that h depends on the last z
+                prior_hidden = nonlinear(hidden_state, n_units=self.cell.n_prior_hidden, n_layers=1)
+            with tf.variable_scope("mu"):
+                prior_mu = linear(prior_hidden, self.cell.n_z)
+            with tf.variable_scope("sigma"):
+                prior_sigma = tf.exp(linear(prior_hidden, self.cell.n_z, bias_start=0.0))
 
         self.prior_mu = prior_mu
         self.prior_sigma = prior_sigma
 
+        self.z_sample = z_sample
+        self.hidden_state = hidden_state
+        with tf.variable_scope("decoder"):
+            with tf.variable_scope("hidden"):
+                # dec_hidden = nonlinear(z_sample, n_units=[200, 200, 400, 400], n_layers=4)
+                dec_hidden = nonlinear(tf.concat((z_sample, hidden_state), 2), n_units=[200, 200, 400, 400], n_layers=4)
+            with tf.variable_scope("mu"):
+                dec_mu = tf.nn.sigmoid(linear(dec_hidden, self.cell.n_x))
+
+        self.mu = dec_mu
+
+        #########
+        # for training
+        #########
+        enc_mu_flatten =  tf.reshape(self.enc_mu_post,[-1, args.latent_size])
+        enc_sigma_flatten = tf.reshape(self.enc_sigma_post,[-1, args.latent_size])
+        dec_mu_flatten = tf.reshape(self.mu, [-1, args.dim_size])
+        prior_mu_flatten = tf.reshape(self.prior_mu, [-1, args.latent_size])
+        prior_sigma_flatten = tf.reshape(self.prior_sigma, [-1, args.latent_size])
+
+        flat_target_data = tf.reshape(self.target_data,[-1, args.dim_size])
+        self.target = flat_target_data
+        self.flat_input = flat_target_data
+
         self.anneal_rate = tf.Variable(1.0, trainable=False)
 
-        lossfunc = get_lossfunc(enc_mu, enc_sigma, dec_mu, prior_mu, prior_sigma, flat_target_data, self.anneal_rate, args)
+        lossfunc = get_lossfunc(enc_mu_flatten, enc_sigma_flatten, dec_mu_flatten, prior_mu_flatten, prior_sigma_flatten, flat_target_data, self.anneal_rate, args)
 
         with tf.variable_scope('cost'):
             self.cost = lossfunc
         tf.summary.scalar('cost', self.cost)
-        tf.summary.scalar('mu', tf.reduce_mean(self.mu))
+        # tf.summary.scalar('mu', tf.reduce_mean(self.mu))
 
         self.merged_summary = tf.summary.merge_all()
 
@@ -294,14 +412,15 @@ class VAEDYN():
         tvars = tf.trainable_variables()
         for t in tvars:
             print t.name
-        grads = tf.gradients(self.cost, tvars)
+        # grads = tf.gradients(self.cost, tvars)
         # grads = tf.cond(
         #    tf.global_norm(grads) > 1e-20,
         #    lambda: tf.clip_by_global_norm(grads, args.grad_clip)[0],
         #    lambda: grads)
         optimizer = tf.train.AdamOptimizer(self.lr)
 
-        self.train_op = optimizer.apply_gradients(zip(grads, tvars))
+        # self.train_op = optimizer.apply_gradients(zip(grads, tvars))
+        self.train_op = optimizer.minimize(lossfunc)
         return
 
     def train(self, sess, args, input_data, sequence_length, output_data=None, check=None, merged=None, prior_prob=0.0):
@@ -427,7 +546,7 @@ class VAEDYN():
 
         chunks = np.zeros((num, args.dim_size), dtype=np.float32)
         zs = np.zeros((num, args.latent_size), dtype=np.float32)
-
+        
         for i in xrange(num):
             if i == 0:
                 feed = {self.input_data: prev_x,
@@ -444,14 +563,15 @@ class VAEDYN():
             # print prior_mu, prior_sigma
             z_sample = prior_mu * 1 + np.random.randn(prev_x.shape[0], args.latent_size) * prior_sigma * 1
 
-            # print 'z_sample:', z_sample
+            #<hyin/Sep-25th-2017> this does not work, the 'unfetchable' problem is that tensorflow does not allow us to access
+            #variable created inside a cond or loop like dynamic_rnn. We might have to hugely restructure the code to move
+            #output layers outside the variationalrnn cell
+            # enc_mu_post, enc_sigma_post, z_sample = sess.run([self.enc_mu_post, self.enc_sigma_post, self.cell.z], feed)
+            o_mu = sess.run([self.mu], {self.hidden_state:[prev_state[1]], self.z_sample:z_sample})[0]
+            # print(enc_mu_post, enc_sigma_post, z_sample)
 
-
-            o_mu = sess.run(self.mu, {self.cell.z: z_sample, self.initial_state_h:prev_state[1]})[0]
-
-            curr_x = o_mu
-            curr_x_reshaped = np.zeros((1, 1, args.dim_size), dtype=np.float32)
-            curr_x_reshaped[0][0] = curr_x
+            # curr_x_reshaped = np.zeros((1, 1, args.dim_size), dtype=np.float32)
+            # curr_x_reshaped[0][0] = curr_x
             # [next_state_c, next_state_h] = sess.run([self.final_state_c, self.final_state_h], { self.input_data:curr_x_reshaped,
             #                                                                                     self.cell.z:z_sample,
             #                                                                                     self.initial_state_c:prev_state[0],
@@ -459,14 +579,74 @@ class VAEDYN():
 
             # <hyin/Jul-14th-2017> today i found that removing x from the state propagation seems to be important if we increase the kl divergence weight, say, to 15
             # but arent the gradients through sequence critical?
-            [next_state_c, next_state_h] = sess.run([self.final_state_c, self.final_state_h], {self.cell.z:z_sample, self.initial_state_c:prev_state[0], self.initial_state_h:prev_state[1]})
+            # <hyin/Sep-26th-2017> so cannot be fed again...
+            [next_state_c, next_state_h] = sess.run([self.final_state_c, self.final_state_h], {self.cell.z:z_sample[0], self.initial_state_c:prev_state[0], self.initial_state_h:prev_state[1]})
 
 
-            chunks[i] = curr_x
+            chunks[i] = o_mu[0][0]
             zs[i] = z_sample
             prev_x = np.zeros((1, 1, args.dim_size), dtype=np.float32)
 
-            prev_x[0][0] = curr_x
+            prev_x = o_mu
             prev_state = next_state_c, next_state_h
 
         return chunks, zs
+
+
+# import argparse
+
+# if __name__ == '__main__':
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('--rnn_size', type=int, default=3,
+#                         help='size of RNN hidden state')
+#     parser.add_argument('--latent_size', type=int, default=3,
+#                         help='size of latent space')
+#     parser.add_argument('--batch_size', type=int, default=16,
+#                         help='minibatch size')
+#     parser.add_argument('--seq_length', type=int, default=100,
+#                         help='RNN sequence length')
+#     parser.add_argument('--num_epochs', type=int, default=100,
+#                         help='number of epochs')
+#     parser.add_argument('--save_every', type=int, default=100,
+#                         help='save frequency')
+#     parser.add_argument('--grad_clip', type=float, default=10.,
+#                         help='clip gradients at this value')
+#     parser.add_argument('--learning_rate', type=float, default=0.0005,
+#                         help='learning rate')
+#     parser.add_argument('--decay_rate', type=float, default=1.,
+#                         help='decay of learning rate')
+#     parser.add_argument('--chunk_samples', type=int, default=1,
+#                         help='number of samples per mdct chunk')
+#     parser.add_argument('--dim_size', type=int, default=1,
+#                         help='number of the input dimension')
+#     args = parser.parse_args()
+
+#     batch_size = 64
+#     max_len = 20
+#     h_dim = 32
+#     x_dim = 784
+#     args.batch_size = batch_size
+#     args.seq_length = max_len
+#     args.rnn_size = h_dim
+#     args.latent_size = h_dim
+#     args.dim_size=x_dim
+
+#     model = VAEDYN(args)
+#     data_batch = np.random.randint(2, size=(batch_size, max_len, x_dim))
+#     predict_batch = np.random.randint(2, size=(batch_size, max_len, x_dim))
+#     # sess = tf.Session()
+#     np.random.seed(0)
+#     with tf.Session() as sess:
+#     # feed = {model.input_data:data_batch,
+#     #         model.target_data:data_batch
+#     #         }
+#         check = tf.add_check_numerics_ops()
+#         sess.run(tf.global_variables_initializer())
+#         for i in range(10):
+#             sess.run(tf.assign(model.lr, 1.0))
+#             data_batch = np.random.randint(2, size=(batch_size, max_len, x_dim))
+#             feed = {model.input_data:data_batch,
+#                 model.target_data:data_batch
+#                 }
+#             cost, _, cr = sess.run([model.cost, model.train_op, check], feed)
+#             print('Cost:', cost)

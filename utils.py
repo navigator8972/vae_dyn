@@ -308,6 +308,20 @@ def display_image_sequences(image_seq, img_size=28):
         raw_input()
     return
 
+from PIL import Image
+
+def display_image_sequences_rgb(image_seq, img_size=(50, 100)):
+    plt.ion()
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    for img in image_seq:
+        d = np.reshape(img, (img_size[0], img_size[1], 3))
+        d_int = (d * 255).astype(np.uint8)
+        img_from_array = Image.fromarray(d_int)
+        img_from_array.show()
+        raw_input()
+    return
+
 import matplotlib
 matplotlib.use('Agg')
 import time
@@ -361,3 +375,10 @@ def generate_image_sequence_files(image_seq, img_size=28, folder='figs', anim=Tr
         anim.save(tmp_gifname, writer='imagemagick', fps=5)
         plt.show()
     return
+
+import gzip
+
+def load_zipped_pickle(fname):
+    with gzip.open(fname, 'rb') as f:
+        loaded_object = cp.load(f)
+        return loaded_object

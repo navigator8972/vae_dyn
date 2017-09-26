@@ -33,4 +33,4 @@ else:
     print "loading model: ",sys.argv[1]
     saver.restore(sess, sys.argv[1])
 
-    sample_data,zs = model.sample(sess,saved_args, num=20)
+    sample_data,zs = model.sample(sess,saved_args, num=16)
