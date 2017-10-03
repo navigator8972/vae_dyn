@@ -7,7 +7,7 @@ from model_vaedyn import VAEDYN
 import numpy as np
 import time
 
-from train_vrnn import next_batch
+from train_vaedyn import next_batch
 import utils
 
 if len(sys.argv) == 1:

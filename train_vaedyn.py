@@ -147,6 +147,14 @@ def train(args, model, ds=None):
 
     return
 
+def str2bool(v):
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--rnn_size', type=int, default=3,
@@ -171,6 +179,8 @@ if __name__ == '__main__':
                         help='number of samples per mdct chunk')
     parser.add_argument('--dim_size', type=int, default=1,
                         help='number of the input dimension')
+    parser.add_argument('--use_cnn', type=str2bool, default=False,
+                        help='use cnn as encoder/decoder')
     args = parser.parse_args()
 
     model = VAEDYN(args)
